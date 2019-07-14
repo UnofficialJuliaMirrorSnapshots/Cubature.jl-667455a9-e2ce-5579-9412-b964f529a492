@@ -10,21 +10,29 @@ integrals of scalar functions).
 """
 module Cubature
 
-
 export hcubature, pcubature, hcubature_v, pcubature_v,
     hquadrature, pquadrature, hquadrature_v, pquadrature_v
 
-const libcubature = joinpath(dirname(@__FILE__), "..", "deps", "libcubature")
+# Load cubature libraries from our deps.jl
+const depsjl_path = joinpath(dirname(@__FILE__), "..", "deps", "deps.jl")
+if !isfile(depsjl_path)
+    error("Cubature not installed properly, run Pkg.build(\"Cubature\"), restart Julia, and try again")
+end
+include(depsjl_path)
+
+function __init__()
+    check_deps()
+end
 
 # constants from cubature.h
-const INDIVIDUAL = convert(Int32, 0)
-const PAIRED = convert(Int32, 1)
-const L2 = convert(Int32, 2)
-const L1 = convert(Int32, 3)
-const LINF = convert(Int32, 4)
+const INDIVIDUAL = Int32(0)
+const PAIRED = Int32(1)
+const L2 = Int32(2)
+const L1 = Int32(3)
+const LINF = Int32(4)
 
-const SUCCESS = convert(Int32, 0)
-const FAILURE = convert(Int32, 1)
+const SUCCESS = Int32(0)
+const FAILURE = Int32(1)
 
 # type to distinguish cubature error codes from thrown exceptions
 struct NoError <: Exception end # used for integrand_error when nothing thrown
@@ -32,9 +40,8 @@ struct NoError <: Exception end # used for integrand_error when nothing thrown
 struct IntegrandData{F}
     integrand_func::F
     integrand_error::Any
-    IntegrandData{F}(f) where F = new{F}(f, NoError())
+    IntegrandData(f::F) where{F} = new{F}(f, NoError())
 end
-IntegrandData(f::F) where F = IntegrandData{F}(f)
 
 # C cubature code is not interrupt-safe (would leak memory), so
 # use sigatomic_begin/end to defer ctrl-c handling until Julia code
@@ -107,31 +114,34 @@ for fscalar in (false, true) # whether the integrand is a scalar
     end
 end
 
-@inline function cf(f, d::D, v) where D
-    if v
-        @cfunction($f, Int32,
-                   (UInt32, UInt, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
-    else
-        @cfunction($f, Int32,
-                   (UInt32, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
-    end
-end
-function integrands(d, xscalar, fscalar, vectorized)
+function integrands(d::D, xscalar, fscalar, vectorized) where {D}
     if xscalar
         if fscalar
-            return (vectorized ? cf(qsintegrand_v, d, true) :
-                    cf(qsintegrand, d, false))
+            if vectorized
+                return @cfunction(qsintegrand_v, Int32, (UInt32, UInt, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            else
+                return @cfunction(qsintegrand, Int32, (UInt32, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            end
         else
-            return (vectorized ? cf(qintegrand_v, d, true) :
-                    cf(qintegrand, d, false))
+            if vectorized
+                return @cfunction(qintegrand_v, Int32, (UInt32, UInt, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            else
+                return @cfunction(qintegrand, Int32, (UInt32, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            end
         end
     else
         if fscalar
-            return (vectorized ? cf(sintegrand_v, d, true) :
-                    cf(sintegrand, d, false))
+            if vectorized
+                return @cfunction(sintegrand_v, Int32, (UInt32, UInt, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            else
+                return @cfunction(sintegrand, Int32, (UInt32, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            end
         else
-            return (vectorized ? cf(integrand_v, d, true) :
-                    cf(integrand, d, false))
+            if vectorized
+                return @cfunction(integrand_v, Int32, (UInt32, UInt, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            else
+                return @cfunction(integrand, Int32, (UInt32, Ptr{Float64}, Ref{D}, UInt32, Ptr{Float64}))
+            end
         end
     end
 end
@@ -142,7 +152,7 @@ function cubature(xscalar::Bool, fscalar::Bool,
                   fdim::Integer, f::F, # Force specialization on F
                   xmin_, xmax_,
                   reqRelError::Real, reqAbsError::Real, maxEval::Integer,
-                  error_norm::Integer) where F
+                  error_norm::Integer) where {F}
     dim = length(xmin_)
     if xscalar && dim != 1
         throw(ArgumentError("quadrature routines are for 1d only"))
